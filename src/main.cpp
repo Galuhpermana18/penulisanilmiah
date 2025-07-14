@@ -10,16 +10,11 @@ const char *ssid = "Kamu Mau?";
 const char *password = "adadikolongmeja";
 const char *botToken = "7743898350:AAFaqTTrWEqNORw4JAQI-sOs_vj5WIQwjzM";
 const char *chatID = "1327279170";
+const int motorPin = 19; 
 
 WiFiClientSecure secured_client;
 UniversalTelegramBot bot(botToken, secured_client);
 RTC_DS1307 rtc;
-
-// PWM setup
-#define pinPWM 19
-const int pwmChannel = 0;
-const int freq = 20000;   // 20 kHz
-const int resolution = 8; // 8-bit resolution
 
 // Data pemberian pakan
 String lastFeedTime = "Belum ada";
@@ -46,13 +41,12 @@ void kirimMenu()
 // Fungsi pemberian pakan
 void beriPakan()
 {
-  ledcWrite(pwmChannel, 128); // duty cycle 50%
-  delay(3000);                // nyala 3 detik
-  ledcWrite(pwmChannel, 0);
-
   DateTime now = rtc.now();
   lastFeedTime = String(now.hour()) + ":" + String(now.minute()) + ":" + String(now.second());
   bot.sendMessage(chatID, "Pakan diberikan sekarang! 🐟", "");
+  digitalWrite(motorPin, 1);
+  delay(5000);                //nyala 5 detik
+  digitalWrite(motorPin, 0);
 }
 
 void setup()
@@ -60,11 +54,8 @@ void setup()
   Serial.begin(115200);
   Wire.begin();
   rtc.begin();
-
-  // PWM setup
-  ledcSetup(pwmChannel, freq, resolution);
-  ledcAttachPin(pinPWM, pwmChannel);
-  ledcWrite(pwmChannel, 0);
+  pinMode(motorPin, OUTPUT);
+  digitalWrite(motorPin, 0);
 
   // Koneksi WiFi
   secured_client.setInsecure();
@@ -87,13 +78,13 @@ void loop()
 {
   DateTime now = rtc.now();
 
-  // Kirim menu otomatis jam 07:15
-  if (now.hour() == 7 && now.minute() == 15)
+  // Kirim menu otomatis jam 07:50
+  if (now.hour() == 7 && now.minute() == 50)
   {
     if (!menuPagiTerkirim)
     {
       kirimMenu();
-      bot.sendMessage(chatID, "Menu pagi telah dikirim (07:15)", "");
+      bot.sendMessage(chatID, "Menu pagi telah dikirim (07:50)", "");
       menuPagiTerkirim = true;
     }
   }
@@ -118,6 +109,7 @@ void loop()
   }
 
   // Pemberian pakan otomatis sesuai jadwal yang diatur dari Telegram
+  // setting pakan ke menu 2
   if (latestScheduledTime != "Belum diset")
   {
     int scheduledHour = latestScheduledTime.substring(0, 2).toInt();
