@@ -1,206 +1,205 @@
 #include <WiFi.h>
-#include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <UniversalTelegramBot.h>
-#include <ArduinoJson.h>
 #include <Wire.h>
 #include <RTClib.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
 
-const char *ssid = "Kamu Mau?";
-const char *password = "adadikolongmeja";
-const char *botToken = "7743898350:AAFaqTTrWEqNORw4JAQI-sOs_vj5WIQwjzM";
-const char *chatID = "1327279170";
-const int motorPin = 19; 
+// ---------- Konfigurasi WiFi & Telegram ----------
+const char* ssid     = "Hp doang bagus";
+const char* password = "tapigapunyakuota";
+const char* botToken = "7743898350:AAFaqTTrWEqNORw4JAQI-sOs_vj5WIQwjzM";
+const char* chatID   = "1327279170";
 
+// ---------- Pin solenoid & LED ----------
+const int motorPin     = 19;
+const int ledBlink     = 15;
+const int ledConnected = 4;
+
+// ---------- Objek global ----------
 WiFiClientSecure secured_client;
 UniversalTelegramBot bot(botToken, secured_client);
 RTC_DS1307 rtc;
 
-// Data pemberian pakan
-String lastFeedTime = "Belum ada";
+// NTP Client setup
+WiFiUDP udp;
+NTPClient timeClient(udp, "pool.ntp.org", 0, 3600000); // Offset 0, update setiap 1 jam
+
+// ---------- Status & mode input ----------
+String lastFeedTime        = "Belum ada";
 String latestScheduledTime = "Belum diset";
-bool waitingForTimeInput = false;
-bool pakanSudahDiberikan = false;
+int scheduledDuration      = 10;   // durasi default untuk jadwal (detik)
+bool waitingForTimeInput   = false;
+bool waitingForDuration    = false;
+bool waitingForScheduleDur = false;
+bool pakanSudahDiberikan   = false;
+bool menuPagiTerkirim      = false;
+bool menuSoreTerkirim      = false;
 
-// Flag pengiriman menu otomatis
-bool menuPagiTerkirim = false;
-bool menuSoreTerkirim = false;
+void kirimMenu();
+void beriPakan(int durasiDetik);
 
-// Fungsi kirim menu
-void kirimMenu()
-{
-  String menuMsg =
-      "Silakan Kirim:\n"
-      "1 = Pemberian pakan sekarang\n"
-      "2 = Pengaturan pemberian pakan (HH:MM)\n"
-      "3 = Melihat jam makan terbaru\n"
-      "4 = Pemberian pakan terakhir";
-  bot.sendMessage(chatID, menuMsg, "");
-}
-
-// Fungsi pemberian pakan
-void beriPakan()
-{
-  DateTime now = rtc.now();
-  lastFeedTime = String(now.hour()) + ":" + String(now.minute()) + ":" + String(now.second());
-  bot.sendMessage(chatID, "Pakan diberikan sekarang! 🐟", "");
-  digitalWrite(motorPin, 1);
-  delay(5000);                //nyala 5 detik
-  digitalWrite(motorPin, 0);
-}
-
-void setup()
-{
+void setup() {
   Serial.begin(115200);
   Wire.begin();
   rtc.begin();
+  secured_client.setInsecure();
   pinMode(motorPin, OUTPUT);
-  digitalWrite(motorPin, 0);
+  pinMode(ledBlink, OUTPUT);
+  pinMode(ledConnected, OUTPUT);
+  digitalWrite(motorPin, LOW);
+  digitalWrite(ledBlink, LOW);
+  digitalWrite(ledConnected, LOW);
 
   // Koneksi WiFi
-  secured_client.setInsecure();
   WiFi.begin(ssid, password);
   Serial.print("Menghubungkan ke WiFi");
-  while (WiFi.status() != WL_CONNECTED)
-  {
-    delay(500);
+  while (WiFi.status() != WL_CONNECTED) {
+    digitalWrite(ledBlink, HIGH);
+    delay(200);
+    digitalWrite(ledBlink, LOW);
+    delay(200);
     Serial.print(".");
   }
-  Serial.println("\nWiFi Terhubung");
+  Serial.println("\nWiFi terhubung!");
+  digitalWrite(ledConnected, HIGH);
+  bot.sendMessage(chatID, "🤖 Pakan Ikan online.");
+  timeClient.begin();
+  timeClient.update();
+  long epochTime = timeClient.getEpochTime();
 
-  if (!rtc.isrunning())
-  {
-    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-  }
+  // Konversi ke zona waktu WIB (GMT +7)
+  long adjustedTime = epochTime + (7 * 3600);
+  rtc.adjust(DateTime(adjustedTime));
+
+  // Debug waktu RTC
+  DateTime now = rtc.now();
+  Serial.print("RTC time set to: ");
+  Serial.println(now.timestamp(DateTime::TIMESTAMP_TIME));
 }
 
-void loop()
-{
+void loop() {
   DateTime now = rtc.now();
 
-  // Kirim menu otomatis jam 07:50
-  if (now.hour() == 7 && now.minute() == 50)
-  {
-    if (!menuPagiTerkirim)
-    {
-      kirimMenu();
-      bot.sendMessage(chatID, "Menu pagi telah dikirim (07:50)", "");
-      menuPagiTerkirim = true;
-    }
-  }
-  else
-  {
-    menuPagiTerkirim = false;
+  static uint32_t lastPrint = 0;
+  if (millis() - lastPrint > 5000) {
+    Serial.print("RTC: ");
+    Serial.println(now.timestamp(DateTime::TIMESTAMP_TIME));
+    lastPrint = millis();
   }
 
-  // Kirim menu otomatis jam 17:15
-  if (now.hour() == 17 && now.minute() == 15)
-  {
-    if (!menuSoreTerkirim)
-    {
-      kirimMenu();
-      bot.sendMessage(chatID, "Menu sore telah dikirim (17:15)", "");
-      menuSoreTerkirim = true;
-    }
-  }
-  else
-  {
-    menuSoreTerkirim = false;
-  }
+  // Kirim menu otomatis pagi (10:30) dan sore (17:15)
+  if (now.hour() == 10 && now.minute() == 30 && !menuPagiTerkirim) { kirimMenu(); menuPagiTerkirim = true; }
+  if (!(now.hour() == 10 && now.minute() == 30)) menuPagiTerkirim = false;
+  if (now.hour() == 17 && now.minute() == 15 && !menuSoreTerkirim) { kirimMenu(); menuSoreTerkirim = true; }
+  if (!(now.hour() == 17 && now.minute() == 15)) menuSoreTerkirim = false;
 
-  // Pemberian pakan otomatis sesuai jadwal yang diatur dari Telegram
-  // setting pakan ke menu 2
-  if (latestScheduledTime != "Belum diset")
-  {
-    int scheduledHour = latestScheduledTime.substring(0, 2).toInt();
-    int scheduledMinute = latestScheduledTime.substring(3, 5).toInt();
-
-    if (now.hour() == scheduledHour && now.minute() == scheduledMinute)
-    {
-      if (!pakanSudahDiberikan)
-      {
-        beriPakan();
+  // Pakan otomatis berdasarkan jadwal terakhir dan durasi yang di-set
+  if (latestScheduledTime != "Belum diset") {
+    int sep = latestScheduledTime.indexOf(':');
+    int schHour = latestScheduledTime.substring(0, sep).toInt();
+    int schMin  = latestScheduledTime.substring(sep + 1).toInt();
+    if (now.hour() == schHour && now.minute() == schMin) {
+      if (!pakanSudahDiberikan) {
+        beriPakan(scheduledDuration);
         pakanSudahDiberikan = true;
       }
-    }
-    else
-    {
-      pakanSudahDiberikan = false; // reset untuk hari berikutnya
-    }
+    } else pakanSudahDiberikan = false;
   }
 
-  // Cek pesan masuk dari Telegram
-  int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
-  while (numNewMessages)
-  {
-    for (int i = 0; i < numNewMessages; i++)
-    {
-      String text = bot.messages[i].text;
-      String fromID = bot.messages[i].chat_id;
+  // Handle pesan Telegram
+  int newMsg = bot.getUpdates(bot.last_message_received + 1);
+  while (newMsg) {
+    for (int i = 0; i < newMsg; i++) {
+      String txt = bot.messages[i].text;
+      String from = bot.messages[i].chat_id;
+      if (from != chatID) { bot.sendMessage(from, "🚫 Tidak punya akses."); continue; }
 
-      if (fromID != chatID)
-      {
-        bot.sendMessage(fromID, "Maaf, Anda tidak memiliki akses!", "");
+      if (waitingForTimeInput) {
+        waitingForTimeInput = false;
+        int sep = txt.indexOf(':');
+        if (sep > 0) {
+          int jam = txt.substring(0, sep).toInt();
+          int menit = txt.substring(sep + 1).toInt();
+          if (jam>=0 && jam<24 && menit>=0 && menit<60) {
+            latestScheduledTime = String(jam) + ":" + String(menit);
+            bot.sendMessage(chatID, "✅ Jadwal disimpan: " + latestScheduledTime);
+
+            // Setelah menerima input waktu, minta durasi pakan
+            bot.sendMessage(chatID, "Masukkan durasi untuk jadwal pakan (detik, max 300):");
+            waitingForScheduleDur = true;
+          } else {
+            bot.sendMessage(chatID, "Format salah. Gunakan HH:MM.");
+          }
+        } else {
+          bot.sendMessage(chatID, "Format salah. Gunakan HH:MM.");
+        }
         continue;
       }
 
-      if (waitingForTimeInput)
-      {
-        int separator = text.indexOf(':');
-        if (separator != -1 && text.length() == 5)
-        {
-          String jam = text.substring(0, separator);
-          String menit = text.substring(separator + 1);
-
-          int jamInt = jam.toInt();
-          int menitInt = menit.toInt();
-
-          if (jamInt >= 0 && jamInt < 24 && menitInt >= 0 && menitInt < 60)
-          {
-            latestScheduledTime = text;
-            bot.sendMessage(chatID, "Jadwal pemberian pakan disimpan: " + text, "");
-          }
-          else
-          {
-            bot.sendMessage(chatID, "Format waktu tidak valid. Gunakan HH:MM (contoh: 15:20)", "");
-          }
+      if (waitingForScheduleDur) {
+        waitingForScheduleDur = false;
+        int durasi = txt.toInt();
+        if (durasi > 0 && durasi <= 300) {
+          scheduledDuration = durasi;
+          bot.sendMessage(chatID, "✅ Durasi jadwal disimpan: " + String(scheduledDuration) + " detik");
+        } else {
+          bot.sendMessage(chatID, "Jumlah detik salah. Masukkan 1–300.");
         }
-        else
-        {
-          bot.sendMessage(chatID, "Format tidak sesuai. Harap masukkan seperti 15:20", "");
-        }
-
-        waitingForTimeInput = false;
+        continue;
       }
-      else if (text == "menu")
-      {
+
+      if (waitingForDuration) {
+        waitingForDuration = false;
+        int detik = txt.toInt();
+        if (detik > 0 && detik <= 300) {
+          beriPakan(detik);
+        } else {
+          bot.sendMessage(chatID, "Durasi salah. Masukkan 1–300.");
+        }
+        continue;
+      }
+
+      // Menu utama
+      if (txt == "menu") {
         kirimMenu();
-      }
-      else if (text == "1")
-      {
-        beriPakan();
-      }
-      else if (text == "2")
-      {
-        bot.sendMessage(chatID, "Masukkan jam pemberian pakan dalam format HH:MM (contoh: 15:20)", "");
+      } else if (txt == "1") {
+        bot.sendMessage(chatID, "Masukkan durasi pakan sekarang (detik, max 300):");
+        waitingForDuration = true;
+      } else if (txt == "2") {
+        bot.sendMessage(chatID, "Masukkan jadwal pakan (HH:MM):");
         waitingForTimeInput = true;
-      }
-      else if (text == "3")
-      {
-        bot.sendMessage(chatID, "Jam makan terbaru: " + latestScheduledTime, "");
-      }
-      else if (text == "4")
-      {
-        bot.sendMessage(chatID, "Pakan terakhir diberikan pada: " + lastFeedTime, "");
-      }
-      else
-      {
-        bot.sendMessage(chatID, "Perintah tidak dikenali. Ketik 'menu' untuk melihat opsi.", "");
+      } else if (txt == "3") {
+        bot.sendMessage(chatID, "🕓 Jadwal: " + latestScheduledTime + "\n⏱️ Durasi: " + String(scheduledDuration) + " detik");
+      } else if (txt == "4") {
+        bot.sendMessage(chatID, "🕔 Pakan terakhir: " + lastFeedTime);
+      } else {
+        bot.sendMessage(chatID, "Perintah tidak dikenali. Ketik 'menu'.");
       }
     }
-
-    numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+    newMsg = bot.getUpdates(bot.last_message_received + 1);
   }
+  delay(250);
+}
 
-  delay(2000); // polling delay
+void kirimMenu() {
+  bot.sendMessage(chatID,
+    "Silakan pilih:\n"
+    "1 = Beri pakan sekarang\n"
+    "2 = Atur jadwal & durasi (HH:MM + detik)\n"
+    "3 = Lihat jadwal & durasi\n"
+    "4 = Lihat pakan terakhir"
+  );
+}
+
+void beriPakan(int durasiDetik) {
+  DateTime now = rtc.now();
+  lastFeedTime = now.timestamp(DateTime::TIMESTAMP_TIME);
+  bot.sendMessage(chatID, "🐟 Pakan ON selama " + String(durasiDetik) + " detik (" + lastFeedTime + ")");
+  digitalWrite(motorPin, HIGH);
+  delay(durasiDetik * 1000);
+  digitalWrite(motorPin, LOW);
+  bot.sendMessage(chatID, "🐟 Pakan OFF. Total: " + String(durasiDetik) + " detik");
+  Serial.println("Pakan selesai: " + lastFeedTime);
 }
